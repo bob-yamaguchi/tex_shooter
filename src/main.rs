@@ -13,6 +13,9 @@ struct RecieveInfo{
     info: HashMap<String, String>
 }
 
+//static HTML_STR: &'static str = include_str!(concat!(env!("OUT_DIR"), "/main.html"));
+static HTML_STR: &'static str = include_str!("../html/main.html");
+
 fn main() {
     let mut path = std::env::current_exe().unwrap();
     path.pop();
@@ -21,7 +24,7 @@ fn main() {
     let html = std::fs::read_to_string(&path).unwrap();
     let w_view = web_view::builder()
         .title("Tex Shooter")
-        .content(web_view::Content::Html(html))
+        .content(web_view::Content::Html(/*html*/HTML_STR))
         .size(1280, 720)
         .user_data(())
         .invoke_handler(|webview, arg| {

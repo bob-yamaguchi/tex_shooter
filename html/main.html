@@ -21,6 +21,102 @@ function generate_pressbutton_json(){
     }
     return JSON.stringify(json);
 }
+function initialize_combobox(target, values, select){
+    var control = document.getElementsByName(target)[0];
+    while(control.lastChild){
+        control.removeChild(control.lastChild);
+    }
+    for(var value of values){
+        var option = document.createElement("option");
+        option.value = value;
+        option.text = value;
+        control.appendChild(option);
+    }
+    //control.options[select_index].setAttribute("selected", "selected");
+    control.querySelector("option[value='"+ select + "']").setAttribute("selected", "selected");
+}
+function update_exposure_value(){
+    var ev_con = document.getElementsByName("exposure_value")[0];
+    var iso_con = document.getElementsByName("iso_control")[0];
+    var av_con = document.getElementsByName("av_control")[0];
+    var tv_con = document.getElementsByName("tv_control")[0];
+    var iso_v = parseInt(iso_con.options[iso_con.selectedIndex].value, 10);
+    var av = parseFloat(av_con.options[av_con.selectedIndex].value);
+    var tv_str = tv_con.options[tv_con.selectedIndex].value;
+    var tv = 0.0;
+    if(tv_str.indexOf("/") >= 0){
+        var v = tv_str.split("/");
+        var num = parseInt(v[0]);
+        var den = parseInt(v[1]);
+        switch(den){
+        case 15:
+            den = 16;
+            break;
+        case 30:
+            den = 32;
+            break;
+        case 60:
+            den = 64;
+            break;
+        case 125:
+            den = 128;
+            break;
+        case 250:
+            den = 256;
+            break;
+        case 500:
+            den = 512;
+            break;
+        case 1000:
+            den = 1024;
+            break;
+        case 2000:
+            den = 2048;
+            break;
+        case 4000:
+            den = 4096;
+            break;
+        case 8000:
+            den = 8192;
+            break;
+        case 16000:
+            den = 16384;
+            break;
+        case 32000:
+            den = 32768;
+            break;
+        case 64000:
+            den = 65536;
+            break;
+        }
+        tv = num / den;
+    }
+    else{
+        tv = parseFloat(tv_str);
+    }
+    ev = Math.log2(iso_v / 100) + Math.log2(av * av) - Math.log2(tv);
+    ev = Math.round(ev * 10) / 10;
+    ev_con.innerHTML = ev.toString(10);
+}
+function update_exposure(){
+    update_exposure_value();
+
+    var iso_con = document.getElementsByName("iso_control")[0];
+    var av_con = document.getElementsByName("av_control")[0];
+    var tv_con = document.getElementsByName("tv_control")[0];
+    var iso_v = parseInt(iso_con.options[iso_con.selectedIndex].value, 10);
+    var av = parseFloat(av_con.options[av_con.selectedIndex].value);
+    var tv_str = tv_con.options[tv_con.selectedIndex].value;
+    var tv = 0.0;
+    if(tv_str.indexOf("/") >= 0){
+        var v = tv_str.split("/");
+        tv = parseInt(v[0]) / parseInt(v[1]);
+    }
+    else{
+        tv = parseFloat(tv_str);
+    }
+    // todo: send to rust program
+}
 function set_root(path){
     var input = document.getElementsByName("project_root_path")[0];
     input.innerHTML = path;
@@ -28,6 +124,24 @@ function set_root(path){
 function set_image(name, base64){
     var img = document.getElementsByName(name)[0];
     img.src = "data:image/jpeg;base64," + base64;
+}
+function initialize(){
+    initialize_combobox("iso_control",[
+        "50", "100", "200", "400", "800", "1600", "3200"
+    ], "100");
+    initialize_combobox("av_control",[
+        "1.0", "1.1", "1.2", "1.4", "1.6", "1.8", "2.0", "2.2", "2.5", "2.8",
+        "3.2", "3.5", "4.0", "4.5", "5.0", "5.6", "6.3", "6.7", "7.1", "8.0",
+        "9.0", "9.5", "10.0", "11.0", "13.0", "14.0", "16.0", "18.0", "19.0", "20.0",
+        "22.0", "25.0", "27.0", "29.0", "32.0"
+    ], "4.0");
+    initialize_combobox("tv_control",[
+        "3", "2.5", "2", "1.6", "1.5" , "1.3", "1", "0.8", "0.7", "0.6",
+        "0.5", "0.4", "0.3", "1/4", "1/5", "1/6", "1/8", "1/10", "1/13", "1/15",
+        "1/20", "1/25", "1/30", "1/40", "1/45", "1/50", "1/60", "1/80", "1/90", "1/100",
+        "1/125", "1/160", "1/180", "1/200", "1/250"
+    ], "1/15");
+    update_exposure_value();
 }
 function request_initialize(){
     var json = {
@@ -46,21 +160,18 @@ function request_initialize(){
     };
     external.invoke(JSON.stringify(json));
 }
+
 function main() {
     const canvas = document.querySelector("#glCanvas");
-    // GL コンテキストを初期化する
     const gl = canvas.getContext("webgl");
-
-    // WebGL が使用可能で動作している場合にのみ続行します
     if (gl === null) {
         return;
     }
 
-    // クリアカラーを黒に設定し、完全に不透明にします
     gl.clearColor(0.0, 0.0, 0.0, 1.0);
-    // 指定されたクリアカラーでカラーバッファをクリアします
     gl.clear(gl.COLOR_BUFFER_BIT);
 
+    initialize();
     request_initialize();
 }
 
@@ -115,6 +226,14 @@ window.onload = main;
     span.icon.arrow-bk{
         background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAANUlEQVQ4y2NgGADwv/Z/ICnK6//////rvy8pyv//f/JfdVQ5PZWToWFUC/20EJ+ByMiiVAcAVPqbKzuawGAAAAAASUVORK5CYII=);
     }
+
+    span.icon.arrow-up{
+        background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAPklEQVQ4y2NgGAWDGPzP/59PmnIQyCdF+W+itUCVBxNpC0w5kQ5DVk6Ulv/9yMrhWvrx2WGAIeIwmsgGIwAA37pJd+OWnBIAAAAASUVORK5CYII=);
+    }
+    span.icon.arrow-down{
+        background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAS0lEQVQ4y2NgGAWDEPyXwBBRwac8///n/zYoIsH/f//Px62h//9/ZC1g5f//9+OzA0kLEcqRtRCpHEkLscrhWohXDtXSP5rIBjMAAA1+SXs4E6cqAAAAAElFTkSuQmCC);
+    }
+
     span.icon.camera{
         background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAxElEQVQ4y2NgoDv4n/8fGQQTUh7/HxX8/u+MTZnN//3/CYHN/3UQGi7/JwZsRmggEuDScPx/9H+d/wr/w/9fJ0ZD838WoAjPfw4gyfF/PiEN+4E8mf/bweGz/L8AUMt1/BosgLzjcN5yIC8ZrwYgWwUlFjj+G+C3gQfo3f8ofBn8GmyAPISrtwN53vg1rAbydKBajgNNZ0HyEY5gTQaL6PxXAdPNxETcalCqAQapM3oKoyBp3CdK/WGEBn8itFwGheDwAAChzl7L3rEsagAAAABJRU5ErkJggg==);
     }
@@ -148,6 +267,7 @@ window.onload = main;
     #left {
         flex-direction: row;
         flex-basis: 150px;
+        padding: 10px 0 0 4px;
     }
     #right {
         flex-grow: 1;
@@ -169,6 +289,9 @@ window.onload = main;
         border-radius: 4px;
         box-shadow: none;
     }
+    input.check.hidden{
+        display: none;
+    }
     input.wide-text{
         width: 300px;
     }
@@ -185,13 +308,25 @@ window.onload = main;
         cursor: pointer;
         background-color: var(--element-hlcolor);
     }
+    select.combobox{
+        border-style: solid;
+        border-radius: 4px;
+        color:var(--font-color);
+        background-color: var(--element-color);
+        padding: 6px 4px 6px 4px;
+        font-size: 110%;
+    }
+    select.combobox:hover{
+        cursor: pointer;
+        background-color: var(--element-hlcolor);
+    }
     div.menu-group{
         display: flex;
         flex-direction: row;
         cursor: pointer;
         border-radius: 4px;
         margin: 2px;
-        padding: 6px;
+        padding: 2px;
         align-items: center;
     }
     div.menu-group:hover{
@@ -211,6 +346,16 @@ window.onload = main;
     }
     div.group.interactive:hover{
         background-color: var(--sub-hlcolor);
+    }
+    div.group.child{
+        height: 0;
+        opacity: 0;
+        visibility: hidden;
+    }
+    input.check.hidden:checked + div.group.child{
+        height: 100%;
+        opacity: 1;
+        visibility: visible;
     }
     div.icon{
         width: 24px;
@@ -233,17 +378,16 @@ window.onload = main;
 <body>
     <div id="parent">
         <div id="left">
+            <div>
+                <div class="icon">
+                    <span class="icon arrow-bk"></span>
+                </div>
+            </div>
             <div class="menu-group">
                 <div class="icon">
                     <span class="icon tools"></span>
                 </div>
                 <div>Project</div>
-            </div>
-            <div class="menu-group">
-                <div class="icon">
-                    <span class="icon grid"></span>
-                </div>
-                <div>Calibration</div>
             </div>
             <div class="menu-group">
                 <div class="icon">
@@ -260,6 +404,7 @@ window.onload = main;
         </div>
         <div id="right">
             <div class="caption">Project</div>
+            <div>tex shooter 0.0.0</div>
             <div class="group">
                 <div class="icon">
                     <span class="icon dir"></span>
@@ -283,6 +428,62 @@ window.onload = main;
                 <div class="content">
                 </div>
                 <div class="end-cap"><span class="icon arrow-fw"></span></div>
+            </div>
+            <div class="group">
+                <div class="icon">
+                    <span class="icon camera"></span>
+                </div>
+                <div class="description">
+                    <div class="subcaption">Connecting a camera</div>
+                    <div name="camera_info">disconnecting</div>
+                </div>
+                <div class="content">
+                </div>
+                <div class="end-cap"></div>
+            </div>
+            <div class="group">
+                <div class="icon">
+                </div>
+                <div class="description">
+                    <div class="subcaption">Exposure</div>
+                    <div name="exposure_value">1.0</div>
+                </div>
+                <div class="content">
+                </div>
+                <div class="end-cap"></div>
+            </div>
+            <div class="group">
+                <div class="icon">
+                </div>
+                <div class="description">
+                    <div class="subcaption">ISO</div>
+                </div>
+                <div class="content">
+                    <select name="iso_control" class="combobox" onchange="update_exposure();"></select>
+                </div>
+                <div class="end-cap"></div>
+            </div>
+            <div class="group">
+                <div class="icon">
+                </div>
+                <div class="description">
+                    <div class="subcaption">AV</div>
+                </div>
+                <div class="content">
+                    <select name="av_control" class="combobox" onchange="update_exposure();"></select>
+                </div>
+                <div class="end-cap"></div>
+            </div>
+            <div class="group">
+                <div class="icon">
+                </div>
+                <div class="description">
+                    <div class="subcaption">TV</div>
+                </div>
+                <div class="content">
+                    <select name="tv_control" class="combobox" onchange="update_exposure();"></select>
+                </div>
+                <div class="end-cap"></div>
             </div>
             <div><img name="target" width="240" height="240"></div>
             <div>
