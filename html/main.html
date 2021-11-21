@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <script>
-// gl-matrix.jp -------------------
-// #region
+
+// #region gl-matrix.jp
 /*!
 @fileoverview gl-matrix - High performance matrix and vector operations
 @author Brandon Jones
@@ -7862,322 +7862,637 @@ THE SOFTWARE.
 
 })));
 // #endregion
-const VS_ = `
-attribute vec4 aVertexPosition;
 
+// #region shaders
+const VS_ = `
 uniform mat4 uModelViewMatrix;
 uniform mat4 uProjectionMatrix;
 
+attribute vec4 aVertexPosition;
+attribute vec2 aTextureCoord;
+
+varying highp vec2 vTextureCoord;
+
 void main() {
   gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+  vTextureCoord = aTextureCoord;
 }
 `;
 
 const PS_=`
+varying highp vec2 vTextureCoord;
+uniform sampler2D uSampler;
 void main() {
-    gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+  gl_FragColor = texture2D(uSampler, vec2(vTextureCoord.x, vTextureCoord.y));
+//  gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
 }
 `;
 
+const VS_PBR = `
+#define float2  vec2
+#define float3  vec3
+#define float4  vec4
+
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+
+attribute vec4 aVertexPosition;
+attribute vec2 aTextureCoord;
+attribute vec3 aTangent;
+attribute vec3 aBinormal;
+attribute vec3 aNormal;
+
+varying highp vec2 vTextureCoord;
+varying float3 vViewDirection;
+varying float3 vTangent;
+varying float3 vBinormal;
+varying float3 vNormal;
+
+void main() {
+  float4 view_position = uModelViewMatrix * aVertexPosition;
+  gl_Position = uProjectionMatrix * view_position;
+  vTextureCoord = aTextureCoord;
+  vViewDirection = normalize(-view_position.xyz);
+  vTangent = mat3(uModelViewMatrix) * aTangent;
+  vBinormal = mat3(uModelViewMatrix) * vBinormal;
+  vNormal = mat3(uModelViewMatrix) * vNormal;
+}
+`;
+const PS_PBR=`
+#define float2  vec2
+#define float3  vec3
+#define float4  vec4
+
+uniform float3 uLightDirection;
+uniform float3 uLightColor;
+uniform float3 uMetalic;
+
+uniform sampler2D uAlbedo;
+uniform sampler2D uNormal;
+uniform sampler2D uRoughness;
+
+varying highp float2 vTextureCoord;
+varying float3 vViewDirection;
+varying float3 vTangent;
+varying float3 vBinormal;
+varying float3 vNormal;
+
+const float PI = 3.1415926535;
+const float DielectricF0 = 0.04;
+
+float D_GGX(float ndoth, float alpha)
+{
+  float a2 = alpha * alpha;
+  float d = (ndoth * a2 - ndoth) * ndoth + 1.0f;
+  return a2 / (d * d + 0.0000001) / PI;
+}
+float V_SmithGGXCorrelated(float ndotl, float ndotv, float alpha)
+{
+  float alpha2 = alpha * alpha;
+  float lambdaV = ndotl * sqrt((-ndotv * alpha2 + ndotv) * ndotv + alpha2);
+  float lambdaL = ndotv * sqrt((-ndotl * alpha2 + ndotl) * ndotl + alpha2);
+  return 0.5 / (lambdaV + lambdaL + 0.0001);
+}
+float3 F_Schlick(float3 f0, float cos)
+{
+  return f0 + (1 - f0) * pow(1.0 - cos, 5.0);
+}
+float Fd_Burley(float ndotv, float ndotl, float ldoth, float roughness)
+{
+  float fd90 = 0.5 + 2 * ldoth * ldoth * roughness;
+  float lightScatter = (1 + (fd90 - 1) * pow(1 - ndotl, 5));
+  float viewScatter = (1 + (fd90 - 1) * pow(1 - ndotv, 5));
+
+  float diffuse = lightScatter * viewScatter / PI;
+  return diffuse;
+}
+float3 BRDF(float3 albedo, float metallic, float perceptualRoughness, float3 normal, float3 viewDir, float3 lightDir, float3 lightColor){
+  float3 halfDir = normalize(lightDir + viewDir);
+  float ndotv = abs(dot(normal, viewDir));
+  float ndotl = max(0, dot(normal, lightDir));
+  float ndoth = max(0, dot(normal, halfDir));
+  float ldoth = max(0, dot(lightDir, halfDir));
+  float reflectivity = lerp(DielectricF0, 1.0, metallic);
+  float3 f0 = lerp(DielectricF0, albedo, metallic);
+  
+  // Diffuse
+  float diffuseTerm = Fd_Burley(ndotv, ndotl, ldoth, perceptualRoughness) * ndotl;
+  //float3 diffuse = albedo * (1.0 - reflectivity) * lightColor * diffuseTerm;
+  float balancedDiffuse = diffuseTerm - diffuseTerm * reflectivity;
+  float3 diffuse = albedo * lightColor * balancedDiffuse;
+  
+  // Specular
+  float alpha = perceptualRoughness * perceptualRoughness;
+  float V = V_SmithGGXCorrelated(ndotl, ndotv, alpha);
+  float D = D_GGX(perceptualRoughness, ndotv, normal, halfDir);
+  float3 F = F_Schlick(f0, ldoth);
+  float3 specular = V * D * F * ndotl * lightColor;
+  specular = max(0.0, specular);
+
+  return diffuse + specular;
+}
+void main() {
+  float3 albedo = texture2D(uAlbedo, vec2(vTextureCoord.x, vTextureCoord.y)).xyz;
+  float3 normal = texture2D(uNormal, vec2(vTextureCoord.x, vTextureCoord.y)).xyz;
+  float roughness = texture2D(uRoughness, vec2(vTextureCoord.x, vTextureCoord.y)).x;
+  float metalic = uMetalic;
+  normal = normal * 2.0 - float3(1.0, 1.0, 1.0);
+  float t = dot(normal, vTangent);
+  float b = dot(normal, vBinormal);
+  float n = dot(normal, vNormal);
+  float3 color = BRDF(albedo, metalic, roughness, float3(t,b,n), vViewDirection, uLightDirection, uLightColor);
+  gl_FragColor = vec4(color, 1.0);
+}
+`;
+// #endregion
+
 function generate_menu_json(select){
-    var checked = document.getElementsByName(select)[0].checked ? "true" : "false";
-    var json = {
-        "id" : 0,
-        "name" : "menu",
-        "value" : select,
-        "info" : {
-            "checked" : checked,
-        }
+  var checked = document.getElementsByName(select)[0].checked ? "true" : "false";
+  var json = {
+    "id" : 0,
+    "name" : "menu",
+    "value" : select,
+    "info" : {
+      "checked" : checked,
     }
-    return JSON.stringify(json);
+  }
+  return JSON.stringify(json);
 }
 function generate_pressbutton_json(){
-    var json = {
-        "id" : 0,
-        "name" : "button",
-        "value" : "",
-        "info" : {}
-    }
-    return JSON.stringify(json);
+  var json = {
+    "id" : 0,
+    "name" : "button",
+    "value" : "",
+    "info" : {}
+  }
+  return JSON.stringify(json);
 }
 function initialize_combobox(target, values, select){
-    var control = document.getElementsByName(target)[0];
-    while(control.lastChild){
-        control.removeChild(control.lastChild);
-    }
-    for(var value of values){
-        var option = document.createElement("option");
-        option.value = value;
-        option.text = value;
-        control.appendChild(option);
-    }
-    //control.options[select_index].setAttribute("selected", "selected");
-    control.querySelector("option[value='"+ select + "']").setAttribute("selected", "selected");
+  var control = document.getElementsByName(target)[0];
+  while(control.lastChild){
+    control.removeChild(control.lastChild);
+  }
+  for(var value of values){
+    var option = document.createElement("option");
+    option.value = value;
+    option.text = value;
+    control.appendChild(option);
+  }
+  //control.options[select_index].setAttribute("selected", "selected");
+  control.querySelector("option[value='"+ select + "']").setAttribute("selected", "selected");
 }
 function update_exposure_value(){
-    var ev_con = document.getElementsByName("exposure_value")[0];
-    var iso_con = document.getElementsByName("iso_control")[0];
-    var av_con = document.getElementsByName("av_control")[0];
-    var tv_con = document.getElementsByName("tv_control")[0];
-    var iso_v = parseInt(iso_con.options[iso_con.selectedIndex].value, 10);
-    var av = parseFloat(av_con.options[av_con.selectedIndex].value);
-    var tv_str = tv_con.options[tv_con.selectedIndex].value;
-    var tv = 0.0;
-    if(tv_str.indexOf("/") >= 0){
-        var v = tv_str.split("/");
-        var num = parseInt(v[0]);
-        var den = parseInt(v[1]);
-        switch(den){
-        case 15:
-            den = 16;
-            break;
-        case 30:
-            den = 32;
-            break;
-        case 60:
-            den = 64;
-            break;
-        case 125:
-            den = 128;
-            break;
-        case 250:
-            den = 256;
-            break;
-        case 500:
-            den = 512;
-            break;
-        case 1000:
-            den = 1024;
-            break;
-        case 2000:
-            den = 2048;
-            break;
-        case 4000:
-            den = 4096;
-            break;
-        case 8000:
-            den = 8192;
-            break;
-        case 16000:
-            den = 16384;
-            break;
-        case 32000:
-            den = 32768;
-            break;
-        case 64000:
-            den = 65536;
-            break;
-        }
-        tv = num / den;
+  var ev_con = document.getElementsByName("exposure_value")[0];
+  var iso_con = document.getElementsByName("iso_control")[0];
+  var av_con = document.getElementsByName("av_control")[0];
+  var tv_con = document.getElementsByName("tv_control")[0];
+  var iso_v = parseInt(iso_con.options[iso_con.selectedIndex].value, 10);
+  var av = parseFloat(av_con.options[av_con.selectedIndex].value);
+  var tv_str = tv_con.options[tv_con.selectedIndex].value;
+  var tv = 0.0;
+  if(tv_str.indexOf("/") >= 0){
+    var v = tv_str.split("/");
+    var num = parseInt(v[0]);
+    var den = parseInt(v[1]);
+    switch(den){
+    case 15:
+      den = 16;
+      break;
+    case 30:
+      den = 32;
+      break;
+    case 60:
+      den = 64;
+      break;
+    case 125:
+      den = 128;
+      break;
+    case 250:
+      den = 256;
+      break;
+    case 500:
+      den = 512;
+      break;
+    case 1000:
+      den = 1024;
+      break;
+    case 2000:
+      den = 2048;
+      break;
+    case 4000:
+      den = 4096;
+      break;
+    case 8000:
+      den = 8192;
+      break;
+    case 16000:
+      den = 16384;
+      break;
+    case 32000:
+      den = 32768;
+      break;
+    case 64000:
+      den = 65536;
+      break;
     }
-    else{
-        tv = parseFloat(tv_str);
-    }
-    ev = Math.log2(iso_v / 100) + Math.log2(av * av) - Math.log2(tv);
-    ev = Math.round(ev * 10) / 10;
-    ev_con.innerHTML = ev.toString(10);
+    tv = num / den;
+  }
+  else{
+    tv = parseFloat(tv_str);
+  }
+  ev = Math.log2(iso_v / 100) + Math.log2(av * av) - Math.log2(tv);
+  ev = Math.round(ev * 10) / 10;
+  ev_con.innerHTML = ev.toString(10);
 }
 function update_exposure(){
-    update_exposure_value();
+  update_exposure_value();
 
-    var iso_con = document.getElementsByName("iso_control")[0];
-    var av_con = document.getElementsByName("av_control")[0];
-    var tv_con = document.getElementsByName("tv_control")[0];
-    var iso_v = parseInt(iso_con.options[iso_con.selectedIndex].value, 10);
-    var av = parseFloat(av_con.options[av_con.selectedIndex].value);
-    var tv_str = tv_con.options[tv_con.selectedIndex].value;
-    var tv = 0.0;
-    if(tv_str.indexOf("/") >= 0){
-        var v = tv_str.split("/");
-        tv = parseInt(v[0]) / parseInt(v[1]);
-    }
-    else{
-        tv = parseFloat(tv_str);
-    }
-    // todo: send to rust program
+  var iso_con = document.getElementsByName("iso_control")[0];
+  var av_con = document.getElementsByName("av_control")[0];
+  var tv_con = document.getElementsByName("tv_control")[0];
+  var iso_v = parseInt(iso_con.options[iso_con.selectedIndex].value, 10);
+  var av = parseFloat(av_con.options[av_con.selectedIndex].value);
+  var tv_str = tv_con.options[tv_con.selectedIndex].value;
+  var tv = 0.0;
+  if(tv_str.indexOf("/") >= 0){
+    var v = tv_str.split("/");
+    tv = parseInt(v[0]) / parseInt(v[1]);
+  }
+  else{
+    tv = parseFloat(tv_str);
+  }
+  // todo: send to rust program
 }
 function set_root(path){
-    var input = document.getElementsByName("project_root_path")[0];
-    input.innerHTML = path;
+  var input = document.getElementsByName("project_root_path")[0];
+  input.innerHTML = path;
 }
-function set_image(name, base64){
-    var img = document.getElementsByName(name)[0];
-    img.src = "data:image/jpeg;base64," + base64;
+function set_albedo(base64){
+  implicit_data.albedo_img.src = "data:image/jpeg;base64," + base64;
 }
+function set_normal(base64){
+  implicit_data.normal_img.src = "data:image/jpeg;base64," + base64;
+}
+function set_roughness(base64){
+  implicit_data.roughness_img.src = "data:image/jpeg;base64," + base64;
+}
+
 function initialize(){
-    initialize_combobox("iso_control",[
-        "50", "100", "200", "400", "800", "1600", "3200"
-    ], "100");
-    initialize_combobox("av_control",[
-        "1.0", "1.1", "1.2", "1.4", "1.6", "1.8", "2.0", "2.2", "2.5", "2.8",
-        "3.2", "3.5", "4.0", "4.5", "5.0", "5.6", "6.3", "6.7", "7.1", "8.0",
-        "9.0", "9.5", "10.0", "11.0", "13.0", "14.0", "16.0", "18.0", "19.0", "20.0",
-        "22.0", "25.0", "27.0", "29.0", "32.0"
-    ], "4.0");
-    initialize_combobox("tv_control",[
-        "3", "2.5", "2", "1.6", "1.5" , "1.3", "1", "0.8", "0.7", "0.6",
-        "0.5", "0.4", "0.3", "1/4", "1/5", "1/6", "1/8", "1/10", "1/13", "1/15",
-        "1/20", "1/25", "1/30", "1/40", "1/45", "1/50", "1/60", "1/80", "1/90", "1/100",
-        "1/125", "1/160", "1/180", "1/200", "1/250"
-    ], "1/15");
-    update_exposure_value();
+  initialize_combobox("iso_control",[
+    "50", "100", "200", "400", "800", "1600", "3200"
+  ], "100");
+  initialize_combobox("av_control",[
+    "1.0", "1.1", "1.2", "1.4", "1.6", "1.8", "2.0", "2.2", "2.5", "2.8",
+    "3.2", "3.5", "4.0", "4.5", "5.0", "5.6", "6.3", "6.7", "7.1", "8.0",
+    "9.0", "9.5", "10.0", "11.0", "13.0", "14.0", "16.0", "18.0", "19.0", "20.0",
+    "22.0", "25.0", "27.0", "29.0", "32.0"
+  ], "4.0");
+  initialize_combobox("tv_control",[
+    "3", "2.5", "2", "1.6", "1.5" , "1.3", "1", "0.8", "0.7", "0.6",
+    "0.5", "0.4", "0.3", "1/4", "1/5", "1/6", "1/8", "1/10", "1/13", "1/15",
+    "1/20", "1/25", "1/30", "1/40", "1/45", "1/50", "1/60", "1/80", "1/90", "1/100",
+    "1/125", "1/160", "1/180", "1/200", "1/250"
+  ], "1/15");
+  update_exposure_value();
+
+  implicit_data.albedo_img.onload = function(){
+    if(gl != null){update_texture(scene_data.albedo_tex, implicit_data.albedo_img);}
+  }
+  implicit_data.normal_img.onload = function(){
+    if(gl != null){update_texture(scene_data.normal_tex, implicit_data.normal_img);}
+  }
+  implicit_data.roughness_img.onload = function(){
+    if(gl != null){update_texture(scene_data.roughness_tex, implicit_data.roughness_img);}
+  }
 }
+// setup from rust
 function request_initialize(){
-    var json = {
-        "id": 0,
-        "name" : "request_img",
-        "value": "",
-        "info" : {}
-    };
-    external.invoke(JSON.stringify(json));
+  if(external == null || external.invoke == null){return;}
+  var json = {
+    "id": 0,
+    "name" : "request_img",
+    "value": "",
+    "info" : {}
+  };
+  external.invoke(JSON.stringify(json));
 
-    var json = {
-        "id": 0,
-        "name" : "request_root",
-        "value": "",
-        "info" : {}
-    };
-    external.invoke(JSON.stringify(json));
+  var json = {
+    "id": 0,
+    "name" : "request_root",
+    "value": "",
+    "info" : {}
+  };
+  external.invoke(JSON.stringify(json));
+}
+// send change root path
+function request_change_root(){
+  var json = {
+    "id": 0,
+    "name" : "change_root",
+    "value": "",
+    "info" : {}
+  };
+  external.invoke(JSON.stringify(json));
+}
+// webgl context
+var gl = null;
+var scene_data = {
+  rotation:0.0,
+  delta_time:0,
+  delta_sec:0.0,
+  last_time:0,
+  model_mat:glMatrix.mat4.create(),
+  albedo_tex:null,
+  normal_tex:null,
+  roughness_tex:null,
+};
+var implicit_data = {
+  albedo_img: new Image(),
+  normal_img: new Image(),
+  roughness_img: new Image(),
+};
+
+function compile_shader(type, source){
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if(!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    alert('shader compile error : ' + gl.getShaderInfoLog(shader));
+    gl.deleteShader(shader);
+    return null;
+  }
+  return shader;
+}
+function setup_shader(vs_source, ps_source){
+  const vs = compile_shader(gl.VERTEX_SHADER, vs_source);
+  if(vs == null){
+    return null;
+  }
+  const ps = compile_shader(gl.FRAGMENT_SHADER, ps_source);
+  if(ps == null){
+    return null;
+  }
+  const program = gl.createProgram();
+  gl.attachShader(program, vs);
+  gl.attachShader(program, ps);
+  gl.linkProgram(program);
+
+  if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+    alert('shader link error: ' + gl.getprogram_infoLog(program));
+    return null;
+  }
+
+  return program;
 }
 
-function compile_shader(gl, type, source){
-    const shader = gl.createShader(type);
-    gl.shaderSource(shader, source);
-    gl.compileShader(shader);
-    if(!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-        alert('shader compile error : ' + gl.getShaderInfoLog(shader));
-        gl.deleteShader(shader);
-        return null;
-    }
-    return shader;
-}
-function setup_shader(gl, vs_source, ps_source){
-    const vs = compile_shader(gl, gl.VERTEX_SHADER, vs_source);
-    if(vs == null){
-        return null;
-    }
-    const ps = compile_shader(gl, gl.FRAGMENT_SHADER, ps_source);
-    if(ps == null){
-        return null;
-    }
-    const program = gl.createProgram();
-    gl.attachShader(program, vs);
-    gl.attachShader(program, ps);
-    gl.linkProgram(program);
+function setup_buffer(){
+  const buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  const positions = [
+    -1.0, -1.0,  1.0,
+    1.0, -1.0,  1.0,
+    1.0,  1.0,  1.0,
+    -1.0,  1.0,  1.0,
 
-    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        alert('shader link error: ' + gl.getprogram_infoLog(program));
-        return null;
-    }
+    -1.0, -1.0, -1.0,
+    -1.0,  1.0, -1.0,
+    1.0,  1.0, -1.0,
+    1.0, -1.0, -1.0,
 
-    return program;
-}
+    -1.0,  1.0, -1.0,
+    -1.0,  1.0,  1.0,
+    1.0,  1.0,  1.0,
+    1.0,  1.0, -1.0,
 
-function setup_square(gl){
-    const buffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
-    const positions = [
-        -1.0,  1.0,
-        1.0,  1.0,
-        -1.0, -1.0,
-        1.0, -1.0,
-    ];
-    gl.bufferData(gl.ARRAY_BUFFER,
-                new Float32Array(positions),
-                gl.STATIC_DRAW);
+    -1.0, -1.0, -1.0,
+    1.0, -1.0, -1.0,
+    1.0, -1.0,  1.0,
+    -1.0, -1.0,  1.0,
+
+    1.0, -1.0, -1.0,
+    1.0,  1.0, -1.0,
+    1.0,  1.0,  1.0,
+    1.0, -1.0,  1.0,
+
+    -1.0, -1.0, -1.0,
+    -1.0, -1.0,  1.0,
+    -1.0,  1.0,  1.0,
+    -1.0,  1.0, -1.0
+  ];
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
+
+  const uv_buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, uv_buffer);
+  const tex_coord = [
+    0.0, 1.0,
+    1.0, 1.0,
+    1.0, 0.0,
+    0.0, 0.0,
+
+    0.0, 1.0,
+    1.0, 1.0,
+    1.0, 0.0,
+    0.0, 0.0,
+
+    0.0, 1.0,
+    1.0, 1.0,
+    1.0, 0.0,
+    0.0, 0.0,
+
+    0.0, 1.0,
+    1.0, 1.0,
+    1.0, 0.0,
+    0.0, 0.0,
+
+    0.0, 1.0,
+    1.0, 1.0,
+    1.0, 0.0,
+    0.0, 0.0,
+
+    0.0, 1.0,
+    1.0, 1.0,
+    1.0, 0.0,
+    0.0, 0.0,
+  ];
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(tex_coord), gl.STATIC_DRAW);
+
+  const index_buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, index_buffer);
+  const indices = [
+    0,  1,  2,
+    0,  2,  3,
+
+    4,  5,  6,
+    4,  6,  7,
+
+    8,  9,  10,
+    8,  10, 11,
+
+    12, 13, 14,
+    12, 14, 15,
+
+    16, 17, 18,
+    16, 18, 19,
+
+    20, 21, 22,
+    20, 22, 23
+  ];
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(indices), gl.STATIC_DRAW);
 
   return {
     position: buffer,
+    tex_coord: uv_buffer,
+    indices: index_buffer,
   };
 }
 
-function render_scene(gl, program_info, buffers){
-    gl.clearColor(0.0, 0.0, 0.0, 1.0);
-    gl.clearDepth(1.0);
-    gl.enable(gl.DEPTH_TEST);
-    gl.depthFunc(gl.LEQUAL);
+function update_texture(texture, img) {
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+};
 
-    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+function update_scene(){
+  var current_date = new Date();
+  var current_time = current_date.getTime();
+  scene_data.delta_time = current_time - scene_data.last_time;
+  scene_data.delta_sec = scene_data.delta_time * 0.001;
+  scene_data.last_time = current_time;
+  scene_data.rotation += scene_data.delta_sec;
 
-    const fieldOfView = 45 * Math.PI / 180;   // in radians
-    const aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
-    const zNear = 0.1;
-    const zFar = 100.0;
-    const projectionMatrix = glMatrix.mat4.create();
+  var mat = glMatrix.mat4.create();
+  glMatrix.mat4.translate(mat, mat, [0.0, 0.0, -6.0]);
+  glMatrix.mat4.rotate(mat, mat, scene_data.rotation, [0,0.33,0.33]);
+  scene_data.model_mat = mat;
+}
+function render_scene(program_info, buffers, updated_scene){
+  gl.clearColor(0.16, 0.16, 0.16, 1.0);
+  gl.clearDepth(1.0);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthFunc(gl.LEQUAL);
 
-    glMatrix.mat4.perspective(projectionMatrix,
-                    fieldOfView,
-                    aspect,
-                    zNear,
-                    zFar);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-    const modelViewMatrix = glMatrix.mat4.create();
+  const fieldOfView = 45 * Math.PI / 180;   // in radians
+  const aspect = gl.canvas.clientWidth / gl.canvas.clientHeight;
+  const zNear = 0.1;
+  const zFar = 100.0;
+  const projectionMatrix = glMatrix.mat4.create();
 
-    glMatrix.mat4.translate(modelViewMatrix,
-                    modelViewMatrix,
-                    [-0.0, 0.0, -6.0]);
+  glMatrix.mat4.perspective(projectionMatrix,
+                  fieldOfView,
+                  aspect,
+                  zNear,
+                  zFar);
+/*
+  const modelViewMatrix = glMatrix.mat4.create();
 
-    {
-    const numComponents = 2;
-    const type = gl.FLOAT;
-    const normalize = false;
-    const stride = 0;
-    const offset = 0;
+  glMatrix.mat4.translate(modelViewMatrix,
+                  modelViewMatrix,
+                  [0.0, 0.0, -6.0]);
+*/
+  {
     gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
     gl.vertexAttribPointer(
-        program_info.attribLocations.vertexPosition,
-        numComponents,
-        type,
-        normalize,
-        stride,
-        offset);
-    gl.enableVertexAttribArray(
-        program_info.attribLocations.vertexPosition);
-    }
+      program_info.attribLocations.vertexPosition,
+      3,
+      gl.FLOAT,
+      false, // normalize
+      0,  // stride
+      0); // offset
+    gl.enableVertexAttribArray(program_info.attribLocations.vertexPosition);
 
-    gl.useProgram(program_info.program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffers.tex_coord);
+    gl.vertexAttribPointer(
+      program_info.attribLocations.textureCoord,
+      2,
+      gl.FLOAT,
+      false,
+      0,
+      0);
+    gl.enableVertexAttribArray(program_info.attribLocations.textureCoord);
+  }
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.indices);
 
-    gl.uniformMatrix4fv(
-        program_info.uniformLocations.projectionMatrix,
-        false,
-        projectionMatrix);
-    gl.uniformMatrix4fv(
-        program_info.uniformLocations.modelViewMatrix,
-        false,
-        modelViewMatrix);
+  gl.useProgram(program_info.program);
 
-    {
-        const offset = 0;
-        const vertexCount = 4;
-        gl.drawArrays(gl.TRIANGLE_STRIP, offset, vertexCount);
-    }
+  gl.uniformMatrix4fv(
+    program_info.uniformLocations.projectionMatrix,
+    false,
+    projectionMatrix);
+  gl.uniformMatrix4fv(
+    program_info.uniformLocations.modelViewMatrix,
+    false,
+    scene_data.model_mat);
+  if(scene_data.albedo_tex != null){
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, scene_data.albedo_tex);
+    gl.uniform1i(program_info.uniformLocations.uSampler, 0);
+  }
+
+  gl.drawElements(gl.TRIANGLES, 36, gl.UNSIGNED_SHORT, 0);
 }
 
 function main() {
-    const canvas = document.querySelector("#glCanvas");
-    const gl = canvas.getContext("webgl");
-    if (gl === null) {
-        return;
-    }
-    const shader = setup_shader(gl, VS_, PS_);
-    const program_info = {
-        program: shader,
-        attribLocations: {
-            vertexPosition: gl.getAttribLocation(shader, 'aVertexPosition'),
-        },
-        uniformLocations: {
-            projectionMatrix: gl.getUniformLocation(shader, 'uProjectionMatrix'),
-            modelViewMatrix: gl.getUniformLocation(shader, 'uModelViewMatrix'),
-        },
-    };
-    const buffer = setup_square(gl);
-    //gl.clearColor(0.0, 0.0, 0.0, 1.0);
-    //gl.clear(gl.COLOR_BUFFER_BIT);
-    render_scene(gl, program_info, buffer);
+  const canvas = document.querySelector("#glCanvas");
+  gl = canvas.getContext("webgl");
+  if (gl === null) {
+    return;
+  }
+  const shader = setup_shader(VS_, PS_);
+  const program_info = {
+    program: shader,
+    attribLocations: {
+      vertexPosition: gl.getAttribLocation(shader, 'aVertexPosition'),
+      textureCoord: gl.getAttribLocation(shader, 'aTextureCoord'),
+    },
+    uniformLocations: {
+      projectionMatrix: gl.getUniformLocation(shader, 'uProjectionMatrix'),
+      modelViewMatrix: gl.getUniformLocation(shader, 'uModelViewMatrix'),
+      uSampler: gl.getUniformLocation(shader, 'uSampler'),
+    },
+  };
+  {
+    scene_data.albedo_tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, scene_data.albedo_tex);
+    const pixel = new Uint8Array([0, 0, 255, 255]);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA,
+                  1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                  pixel);
+  }
+  {
+    scene_data.normal_tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, scene_data.normal_tex);
+    const pixel = new Uint8Array([128, 128, 255, 255]);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA,
+                  1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                  pixel);
+  }
+  {
+    scene_data.roughness_tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, scene_data.roughness_tex);
+    const pixel = new Uint8Array([230, 230, 230, 255]);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA,
+                  1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+                  pixel);
+  }
 
-    // for the DOM
-    initialize();
-    request_initialize();
+  const buffer = setup_buffer();
+  function render(){
+    update_scene();
+    render_scene(program_info, buffer);
+    setInterval(render, Math.min(scene_data.delta_time, 33));
+  }
+
+  // for the DOM
+  initialize();
+  request_initialize();
+  var current_date = new Date();
+  scene_data.last_time = current_date.getTime();
+  setInterval(render, 33);
 }
 
 window.onload = main;
@@ -8189,312 +8504,340 @@ window.onload = main;
   <title>Sample</title>
   <style>
     :root{
-        --main-color: rgb(52, 55, 63);
-        --main-hlcolor: rgb(65, 69, 78);
-        --sub-color: rgb(70, 75, 88);
-        --sub-hlcolor: rgb(82, 87, 102);
-        --element-color:rgb(101, 109, 128);
-        --element-hlcolor:rgb(110, 119, 139);
+      --main-color: rgb(52, 55, 63);
+      --main-hlcolor: rgb(65, 69, 78);
+      --sub-color: rgb(70, 75, 88);
+      --sub-hlcolor: rgb(82, 87, 102);
+      --element-color:rgb(101, 109, 128);
+      --element-hlcolor:rgb(110, 119, 139);
 
-        --font-color: whitesmoke;
+      --font-color: whitesmoke;
+
+      --icon-dir : url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAVElEQVQ4y93SQQrAIAxEUW9Xb+VRC3qO9rsVxaYT3bR//yCBCeEncVBoSxY46XsmXNgVogYgq4B1MP1xALcTvD/JC2anbACoJ8kgq9OI3byt8X28CkLg/zfXbCDWAAAAAElFTkSuQmCC);
+      --icon-tools : url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAABC0lEQVQ4y73Uv0pDMRiG8ddQES0OorNyJm9DhOLQRXAq6BW4eQMdpegl1M4uB90dhA4OZ1AXRyGzi4MF/1R5XD6OOcek1qXZ8vF7MiQQaeaLFXZpMT8tb/EEwIXt2xS8kePifIdXAB5ZNw7gySTm0nzMpk2KkmdcpjjAFYuSxAswZIkMz6ge7DEugweaEg4PwBAPFCHeokuXmzL4ZB/HgHC1w+DYhud88G7Jtc08I4oKlyROAeiwzQa3wbmDxIVa0pEk1nj+k0sShyxLOPpTcYt++BlOosfBf/gJ8JVMfvEm95BM6lySWE0mMT4hCXi/fjPRhAZ5nFeSo3DYII9zS+4q3JIJz8TC7D6Jb0RHf0TA6QncAAAAAElFTkSuQmCC);
+      --icon-arrow-fw: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAOklEQVQ4y2NgoDP4n/8/nxTl2f9BgHgt/23+fx7VMti0/Nf4/xysoX9UOT2VAzXUk6QcrKWfJOU0AQAe251Fp4h+cAAAAABJRU5ErkJggg==);
+      --icon-arrow-bk: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAANUlEQVQ4y2NgGADwv/Z/ICnK6//////rvy8pyv//f/JfdVQ5PZWToWFUC/20EJ+ByMiiVAcAVPqbKzuawGAAAAAASUVORK5CYII=);
+      --icon-arrow-up: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAPklEQVQ4y2NgGAWDGPzP/59PmnIQyCdF+W+itUCVBxNpC0w5kQ5DVk6Ulv/9yMrhWvrx2WGAIeIwmsgGIwAA37pJd+OWnBIAAAAASUVORK5CYII=);
+      --icon-arrow-down: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAS0lEQVQ4y2NgGAWDEPyXwBBRwac8///n/zYoIsH/f//Px62h//9/ZC1g5f//9+OzA0kLEcqRtRCpHEkLscrhWohXDtXSP5rIBjMAAA1+SXs4E6cqAAAAAElFTkSuQmCC);
+      --icon-camera: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAxElEQVQ4y2NgoDv4n/8fGQQTUh7/HxX8/u+MTZnN//3/CYHN/3UQGi7/JwZsRmggEuDScPx/9H+d/wr/w/9fJ0ZD838WoAjPfw4gyfF/PiEN+4E8mf/bweGz/L8AUMt1/BosgLzjcN5yIC8ZrwYgWwUlFjj+G+C3gQfo3f8ofBn8GmyAPISrtwN53vg1rAbydKBajgNNZ0HyEY5gTQaL6PxXAdPNxETcalCqAQapM3oKoyBp3CdK/WGEBn8itFwGheDwAAChzl7L3rEsagAAAABJRU5ErkJggg==);
+      --icon-grid: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAN0lEQVQ4y2NgoAv47/H/8X9C4PF/D4SGR/+JAY8QGoCAFPZg1UAMoEzDaCiNiFAiOQORmkVpCgAVnfpQ6eRp+gAAAABJRU5ErkJggg==);
+      --icon-pictures: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAhUlEQVQ4y2NgIB/89/j/+D8+8Pi/B6qGR/8JgUeoGoAArwvQ5YnWAGOMaoApsvivSYSG/yz/TcG0GDB2L//nIqyh9/+H/5r/mf/vA8fvPAIa/oeAld35PxWeJOLxaACa/AkjDX35rzUwwUps8oZrIDYDEXIK4YxBUANht/8nLfOT6gJUAAB2isF0bF2nagAAAABJRU5ErkJggg==);
+      --icon-processing: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAfElEQVQ4y2NgGIzgv+3/e2AaCPDS9/7bQjTcJaAQQd+llx+gVhKtjmQN9PEDLoDTDzTRgNtJH4jV8A1M/vhv9n8+MU66/1/p/3UgnQEU4fp/hZCG7/+NgSzV//1QSa3/X/A7KRlDNB63hkf4Qwkjef/3+P+YKA2wDDTYAAA1TFBVCcdtogAAAABJRU5ErkJggg==);
     }
     html{
-        width: 100%;
-        height: 100%;
-        min-width: 800px;
+      width: 100%;
+      height: 100%;
+      min-width: 800px;
     }
+    /*scroll bar*/
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      border-radius: 5px;
+      box-shadow: 0 0 4px #aaa inset;
+    }
+    ::-webkit-scrollbar-thumb {
+      border-radius: 5px;
+      background: #8d8d8d;
+    }
+
     body{
-        width: 100%;
-        height:100%;
-        overflow: hidden;
-        margin: 0;
-        padding: 0;
-        background-color: var(--main-color);
-        font-size: 80%;
-        color:var(--font-color);
+      width: 100%;
+      height:100%;
+      margin: 0;
+      padding: 0;
+      background-color: var(--main-color);
+      font-size: 80%;
+      color:var(--font-color);
     }
     span.icon{
-        display: inline-block;
-        background-repeat: no-repeat;
-        width: 24px;
-        height: 24px;
+      display: inline-block;
+      background-repeat: no-repeat;
+      width: 24px;
+      height: 24px;
     }
     span.icon.dir{
-        background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAVElEQVQ4y93SQQrAIAxEUW9Xb+VRC3qO9rsVxaYT3bR//yCBCeEncVBoSxY46XsmXNgVogYgq4B1MP1xALcTvD/JC2anbACoJ8kgq9OI3byt8X28CkLg/zfXbCDWAAAAAElFTkSuQmCC);
+      background-image: var(--icon-dir);
     }
     span.icon.tools{
-        background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAABC0lEQVQ4y73Uv0pDMRiG8ddQES0OorNyJm9DhOLQRXAq6BW4eQMdpegl1M4uB90dhA4OZ1AXRyGzi4MF/1R5XD6OOcek1qXZ8vF7MiQQaeaLFXZpMT8tb/EEwIXt2xS8kePifIdXAB5ZNw7gySTm0nzMpk2KkmdcpjjAFYuSxAswZIkMz6ge7DEugweaEg4PwBAPFCHeokuXmzL4ZB/HgHC1w+DYhud88G7Jtc08I4oKlyROAeiwzQa3wbmDxIVa0pEk1nj+k0sShyxLOPpTcYt++BlOosfBf/gJ8JVMfvEm95BM6lySWE0mMT4hCXi/fjPRhAZ5nFeSo3DYII9zS+4q3JIJz8TC7D6Jb0RHf0TA6QncAAAAAElFTkSuQmCC);
+      background-image: var(--icon-tools);
     }
     span.icon.arrow-fw{
-        background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAOklEQVQ4y2NgoDP4n/8/nxTl2f9BgHgt/23+fx7VMti0/Nf4/xysoX9UOT2VAzXUk6QcrKWfJOU0AQAe251Fp4h+cAAAAABJRU5ErkJggg==);
+      background-image: var(--icon-arrow-fw);
     }
     span.icon.arrow-bk{
-        background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAANUlEQVQ4y2NgGADwv/Z/ICnK6//////rvy8pyv//f/JfdVQ5PZWToWFUC/20EJ+ByMiiVAcAVPqbKzuawGAAAAAASUVORK5CYII=);
+      background-image: var(--icon-arrow-bk);
     }
-
     span.icon.arrow-up{
-        background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAPklEQVQ4y2NgGAWDGPzP/59PmnIQyCdF+W+itUCVBxNpC0w5kQ5DVk6Ulv/9yMrhWvrx2WGAIeIwmsgGIwAA37pJd+OWnBIAAAAASUVORK5CYII=);
+      background-image: var(--icon-arrow-up);
     }
     span.icon.arrow-down{
-        background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAS0lEQVQ4y2NgGAWDEPyXwBBRwac8///n/zYoIsH/f//Px62h//9/ZC1g5f//9+OzA0kLEcqRtRCpHEkLscrhWohXDtXSP5rIBjMAAA1+SXs4E6cqAAAAAElFTkSuQmCC);
+      background-image: var(--icon-arrow-down);
     }
-
     span.icon.camera{
-        background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAxElEQVQ4y2NgoDv4n/8fGQQTUh7/HxX8/u+MTZnN//3/CYHN/3UQGi7/JwZsRmggEuDScPx/9H+d/wr/w/9fJ0ZD838WoAjPfw4gyfF/PiEN+4E8mf/bweGz/L8AUMt1/BosgLzjcN5yIC8ZrwYgWwUlFjj+G+C3gQfo3f8ofBn8GmyAPISrtwN53vg1rAbydKBajgNNZ0HyEY5gTQaL6PxXAdPNxETcalCqAQapM3oKoyBp3CdK/WGEBn8itFwGheDwAAChzl7L3rEsagAAAABJRU5ErkJggg==);
+      background-image: var(--icon-camera);
     }
     span.icon.grid{
-        background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAN0lEQVQ4y2NgoAv47/H/8X9C4PF/D4SGR/+JAY8QGoCAFPZg1UAMoEzDaCiNiFAiOQORmkVpCgAVnfpQ6eRp+gAAAABJRU5ErkJggg==);
+      background-image: var(--icon-grid);
     }
     span.icon.pictures{
-        background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAhUlEQVQ4y2NgIB/89/j/+D8+8Pi/B6qGR/8JgUeoGoAArwvQ5YnWAGOMaoApsvivSYSG/yz/TcG0GDB2L//nIqyh9/+H/5r/mf/vA8fvPAIa/oeAld35PxWeJOLxaACa/AkjDX35rzUwwUps8oZrIDYDEXIK4YxBUANht/8nLfOT6gJUAAB2isF0bF2nagAAAABJRU5ErkJggg==);
+      background-image: var(--icon-pictures);
     }
     span.icon.processing{
-        background-image: url(data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAQAAABKfvVzAAAAfElEQVQ4y2NgGIzgv+3/e2AaCPDS9/7bQjTcJaAQQd+llx+gVhKtjmQN9PEDLoDTDzTRgNtJH4jV8A1M/vhv9n8+MU66/1/p/3UgnQEU4fp/hZCG7/+NgSzV//1QSa3/X/A7KRlDNB63hkf4Qwkjef/3+P+YKA2wDDTYAAA1TFBVCcdtogAAAABJRU5ErkJggg==);
+      background-image: var(--icon-processing);
     }
 
     .submenu{
-        display: block;
-        color:mintcream;
-        background-color: rgb(71, 82, 107);
-        height: 0;
-        opacity: 0;
-        visibility: hidden;
-        cursor: pointer;
-        font-size: 130%;
-        padding-left: 25px;
-        width: 200%;
+      display: block;
+      color:mintcream;
+      background-color: rgb(71, 82, 107);
+      height: 0;
+      opacity: 0;
+      visibility: hidden;
+      cursor: pointer;
+      font-size: 130%;
+      padding-left: 25px;
+      width: 200%;
     }
     #parent {
-        display: flex;
-        height: 100%;
-        width: 100%;
+      display: flex;
+      height: 100%;
+      width: 100%;
     }
     #left {
-        flex-direction: row;
-        flex-basis: 150px;
-        padding: 10px 0 0 4px;
+      flex-direction: row;
+      flex-basis: 150px;
+      padding: 10px 0 0 4px;
     }
     #right {
-        flex-grow: 1;
-        padding-left: 10px;
-        padding-top: 10px;
-        padding-right: 20px;
+      flex-grow: 1;
+      padding-left: 10px;
+      padding-top: 10px;
+      padding-right: 20px;
     }
     .caption{
-        font-size: 160%;
-        font-weight: bold;
+      font-size: 160%;
+      font-weight: bold;
     }
     .subcaption{
-        font-size: 120%;
-        font-weight:500;
+      font-size: 120%;
+      font-weight:500;
     }
 
     input{
-        border: thin;
-        border-radius: 4px;
-        box-shadow: none;
+      border: thin;
+      border-radius: 4px;
+      box-shadow: none;
     }
     input.check.hidden{
-        display: none;
+      display: none;
     }
     input.wide-text{
-        width: 300px;
+      width: 300px;
     }
     button{
-        color:var(--font-color);
-        background-color: var(--element-color);
-        border: thin;
-        border-radius: 4px;
-        box-shadow: none;
-        padding: 6px 4px 6px 4px;
-        font-size: 110%;
+      color:var(--font-color);
+      background-color: var(--element-color);
+      border: thin;
+      border-radius: 4px;
+      box-shadow: none;
+      padding: 6px 4px 6px 4px;
+      font-size: 110%;
     }
     button:hover{
-        cursor: pointer;
-        background-color: var(--element-hlcolor);
+      cursor: pointer;
+      background-color: var(--element-hlcolor);
     }
-    select.combobox{
-        border-style: solid;
-        border-radius: 4px;
-        color:var(--font-color);
-        background-color: var(--element-color);
-        padding: 6px 4px 6px 4px;
-        font-size: 110%;
+    select::-ms-expand{
+      display: none;
+    }
+    select.combobox {
+      appearance: none;
+      border-style: solid;
+      border-radius: 4px;
+      color:var(--font-color);
+      background-color: var(--element-color);
+      background-image: var(--icon-arrow-down);
+      background-position: right 0px center;
+      background-repeat: no-repeat;
+      padding: 6px 18px 6px 4px;
+      font-size: 110%;
     }
     select.combobox:hover{
-        cursor: pointer;
-        background-color: var(--element-hlcolor);
+      cursor: pointer;
+      background-color: var(--element-hlcolor);
     }
     div.menu-group{
-        display: flex;
-        flex-direction: row;
-        cursor: pointer;
-        border-radius: 4px;
-        margin: 2px;
-        padding: 2px;
-        align-items: center;
+      display: flex;
+      flex-direction: row;
+      cursor: pointer;
+      border-radius: 4px;
+      margin: 2px;
+      padding: 2px;
+      align-items: center;
     }
     div.menu-group:hover{
-        background-color: var(--main-hlcolor);
+      background-color: var(--main-hlcolor);
     }
     div.group{
-        display: flex;
-        flex-direction: row;
-        background-color: var(--sub-color);
-        border-radius: 4px;
-        margin: 2px;
-        padding: 6px;
-        align-items: center;
+      display: flex;
+      flex-direction: row;
+      background-color: var(--sub-color);
+      border-radius: 4px;
+      margin: 2px;
+      padding: 6px;
+      align-items: center;
     }
     div.group.interactive{
-        cursor: pointer;
+      cursor: pointer;
     }
     div.group.interactive:hover{
-        background-color: var(--sub-hlcolor);
+      background-color: var(--sub-hlcolor);
     }
     div.group.child{
-        height: 0;
-        opacity: 0;
-        visibility: hidden;
+      height: 0;
+      opacity: 0;
+      visibility: hidden;
     }
     input.check.hidden:checked + div.group.child{
-        height: 100%;
-        opacity: 1;
-        visibility: visible;
+      height: 100%;
+      opacity: 1;
+      visibility: visible;
     }
     div.icon{
-        width: 24px;
-        margin-left: 8px;
-        margin-right: 8px;
+      width: 24px;
+      margin-left: 8px;
+      margin-right: 8px;
     }
     div.description{
-        width:fit-content;
-        margin: 0 0 0 0;
+      width:fit-content;
+      margin: 0 0 0 0;
     }
     div.content{
-        margin-left: auto;
-        margin-right: 0;
+      margin-left: auto;
+      margin-right: 0;
     }
     div.end-cap{
-        width: 40px;
+      width: 40px;
     }
   </style>
 </head>
 <body>
-    <div id="parent">
-        <div id="left">
-            <div>
-                <div class="icon">
-                    <span class="icon arrow-bk"></span>
-                </div>
-            </div>
-            <div class="menu-group">
-                <div class="icon">
-                    <span class="icon tools"></span>
-                </div>
-                <div>Project</div>
-            </div>
-            <div class="menu-group">
-                <div class="icon">
-                    <span class="icon camera"></span>
-                </div>
-                <div>Camera</div>
-            </div>
-            <div class="menu-group">
-                <div class="icon">
-                    <span class="icon processing"></span>
-                </div>
-                <div>Processing</div>
-            </div>
+  <div id="parent">
+    <div id="left">
+      <div>
+        <div class="icon">
+          <span class="icon arrow-bk"></span>
         </div>
-        <div id="right">
-            <div class="caption">Project</div>
-            <div>tex shooter 0.0.0</div>
-            <div class="group">
-                <div class="icon">
-                    <span class="icon dir"></span>
-                </div>
-                <div class="description">
-                    <div class="subcaption">データーの格納先</div>
-                    <div name="project_root_path">A:/</div>
-                </div>
-                <div class="content">
-                    <button>choose</button>
-                </div>
-                <div class="end-cap"></div>
-            </div>
-            <div class="group interactive">
-                <div class="icon">
-                    <span class="icon pictures"></span>
-                </div>
-                <div class="description">
-                    <div class="subcaption">View pictures</div>
-                </div>
-                <div class="content">
-                </div>
-                <div class="end-cap"><span class="icon arrow-fw"></span></div>
-            </div>
-            <div class="group">
-                <div class="icon">
-                    <span class="icon camera"></span>
-                </div>
-                <div class="description">
-                    <div class="subcaption">Connecting a camera</div>
-                    <div name="camera_info">disconnecting</div>
-                </div>
-                <div class="content">
-                </div>
-                <div class="end-cap"></div>
-            </div>
-            <div class="group">
-                <div class="icon">
-                </div>
-                <div class="description">
-                    <div class="subcaption">Exposure</div>
-                    <div name="exposure_value">1.0</div>
-                </div>
-                <div class="content">
-                </div>
-                <div class="end-cap"></div>
-            </div>
-            <div class="group">
-                <div class="icon">
-                </div>
-                <div class="description">
-                    <div class="subcaption">ISO</div>
-                </div>
-                <div class="content">
-                    <select name="iso_control" class="combobox" onchange="update_exposure();"></select>
-                </div>
-                <div class="end-cap"></div>
-            </div>
-            <div class="group">
-                <div class="icon">
-                </div>
-                <div class="description">
-                    <div class="subcaption">AV</div>
-                </div>
-                <div class="content">
-                    <select name="av_control" class="combobox" onchange="update_exposure();"></select>
-                </div>
-                <div class="end-cap"></div>
-            </div>
-            <div class="group">
-                <div class="icon">
-                </div>
-                <div class="description">
-                    <div class="subcaption">TV</div>
-                </div>
-                <div class="content">
-                    <select name="tv_control" class="combobox" onchange="update_exposure();"></select>
-                </div>
-                <div class="end-cap"></div>
-            </div>
-            <div><img name="target" width="240" height="240"></div>
-            <div>
-                <canvas id="glCanvas" width="480" height="480"></canvas>
-            </div>
+      </div>
+      <div class="menu-group">
+        <div class="icon">
+          <span class="icon tools"></span>
         </div>
+        <div>Project</div>
+      </div>
+      <div class="menu-group">
+        <div class="icon">
+          <span class="icon camera"></span>
+        </div>
+        <div>Camera</div>
+      </div>
+      <div class="menu-group">
+        <div class="icon">
+          <span class="icon processing"></span>
+        </div>
+        <div>Processing</div>
+      </div>
     </div>
+    <div id="right">
+      <div class="caption">Project</div>
+      <div>tex shooter 0.0.0</div>
+      <div class="group">
+        <div class="icon">
+          <span class="icon dir"></span>
+        </div>
+        <div class="description">
+          <div class="subcaption">データーの格納先</div>
+          <div name="project_root_path">A:/</div>
+        </div>
+        <div class="content">
+          <button onclick="request_change_root()">choose</button>
+        </div>
+        <div class="end-cap"></div>
+      </div>
+      <div class="group interactive">
+        <div class="icon">
+          <span class="icon pictures"></span>
+        </div>
+        <div class="description">
+          <div class="subcaption">View pictures</div>
+        </div>
+        <div class="content">
+        </div>
+        <div class="end-cap"><span class="icon arrow-fw"></span></div>
+      </div>
+      <div class="group">
+        <div class="icon">
+          <span class="icon camera"></span>
+        </div>
+        <div class="description">
+          <div class="subcaption">Connecting a camera</div>
+          <div name="camera_info">disconnecting</div>
+        </div>
+        <div class="content">
+        </div>
+        <div class="end-cap"></div>
+      </div>
+      <div class="group">
+        <div class="icon">
+        </div>
+        <div class="description">
+          <div class="subcaption">Exposure</div>
+          <div name="exposure_value">1.0</div>
+        </div>
+        <div class="content">
+        </div>
+        <div class="end-cap"></div>
+      </div>
+      <div class="group">
+        <div class="icon">
+        </div>
+        <div class="description">
+          <div class="subcaption">ISO</div>
+        </div>
+        <div class="content">
+          <select name="iso_control" class="combobox" onchange="update_exposure();"></select>
+        </div>
+        <div class="end-cap"></div>
+      </div>
+      <div class="group">
+        <div class="icon">
+        </div>
+        <div class="description">
+          <div class="subcaption">AV</div>
+        </div>
+        <div class="content">
+          <select name="av_control" class="combobox" onchange="update_exposure();"></select>
+        </div>
+        <div class="end-cap"></div>
+      </div>
+      <div class="group">
+        <div class="icon">
+        </div>
+        <div class="description">
+          <div class="subcaption">TV</div>
+        </div>
+        <div class="content">
+          <select name="tv_control" class="combobox" onchange="update_exposure();"></select>
+        </div>
+        <div class="end-cap"></div>
+      </div>
+      <div>
+        <canvas id="glCanvas" width="480" height="480"></canvas>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

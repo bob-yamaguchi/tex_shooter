@@ -1,9 +1,7 @@
 
-
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use chrono::DateTime;
-
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct RationalValue{
@@ -88,7 +86,7 @@ impl ExposureSettings{
             32000=>32768,
             64000=>65536,
             _=>self.time_value.denominator
-        }
+        };
         let v = self.time_value.numarator as f32 / denominator as f32;
         return -v.log2();
     }
@@ -118,12 +116,20 @@ pub struct ProjectSettings{
 }
 
 impl ProjectSettings{
-    pub fn load()->Result<ProjectSettings, String>{
-        // try to read a config
+    fn get_json_path()->Result<std::path::PathBuf, String>{
         let path = dirs::home_dir();
         if path.is_some(){
             let mut path = path.unwrap();
             path.push("texshooter.json");
+            return Ok(path);
+        }
+        Err(String::from("could not get a home directory."))
+    }
+    pub fn load()->Result<ProjectSettings, String>{
+        // try to read a config
+        let path = ProjectSettings::get_json_path();
+        if path.is_ok(){
+            let mut path = path.unwrap();
             let json = std::fs::read_to_string(&path);
             if json.is_ok(){
                 let json = json.unwrap();
@@ -132,6 +138,7 @@ impl ProjectSettings{
                     let settings : ProjectSettings = deserialized.unwrap();
                     return Ok(settings);
                 }
+                return Err(String::from("failed to deserialize settings"));
             }
             else{
                 path.pop();
@@ -142,9 +149,22 @@ impl ProjectSettings{
                 });
             }
         }
-        Err(String::from("could not get a home directory."))
+        Err(path.unwrap_err())
+    }
+    pub fn save(&self){
+        let serialized = serde_json::to_string(self);
+        if serialized.is_ok(){
+            let path = ProjectSettings::get_json_path();
+            if path.is_ok(){
+                let _ = std::fs::write(&path.unwrap(), &serialized.unwrap());
+            }
+        }
     }
     pub fn get_root_path(&self)->&str{
         return self.root_path.as_str();
     }
+    pub fn set_root_path(&mut self, path: &str){
+        self.root_path = path.to_string();
+    }
 }
+
