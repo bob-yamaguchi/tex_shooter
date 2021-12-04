@@ -8127,6 +8127,10 @@ function set_root(path){
   var input = document.getElementsByName("project_root_path")[0];
   input.innerHTML = path;
 }
+function set_connection(device){
+  var input = document.getElementsByName("camera_info")[0];
+  input.innerHTML = device;
+}
 function set_albedo(base64){
   implicit_data.albedo_img.src = "data:image/jpeg;base64," + base64;
 }
@@ -8179,6 +8183,14 @@ function request_initialize(){
   var json = {
     "id": 0,
     "name" : "request_root",
+    "value": "",
+    "info" : {}
+  };
+  external.invoke(JSON.stringify(json));
+
+  var json = {
+    "id": 0,
+    "name" : "request_connecting",
     "value": "",
     "info" : {}
   };

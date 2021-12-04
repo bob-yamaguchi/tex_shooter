@@ -8,7 +8,6 @@ edition = "2018"
 
 [dependencies]
 edsdk = { git = "https://github.com/bob-yamaguchi/edsdk-rs/", branch = "master"}
-wfd = {git = "https://github.com/ben-wallis/wfd" }
 web-view = { version = "0.7.3", features = ["edge"] }
 base64 = {version = "0.13.0"}
 
