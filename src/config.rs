@@ -53,22 +53,31 @@ impl RationalValue{
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ExposureSettings{
-    iso : u32,
-    aperture_value : f32,
-    time_value : RationalValue,
+    iso: String,
+    aperture_value: String,
+    time_value: RationalValue,
+}
+
+impl Default for ExposureSettings {
+    fn default() -> Self {
+        ExposureSettings{iso: "100".to_string(), aperture_value: "4.0".to_string(), time_value: RationalValue::from_str("1/15")}
+    }
 }
 
 impl ExposureSettings{
+    pub fn new()->Self{
+        Default::default()
+    }
     pub fn calc_ev(&self)->f32{
         self.calc_iso() + self.calc_av() + self.calc_tv()
     }
     fn calc_iso(&self)->f32{
-        let v = self.iso as f32 / 100.0;
-        return v.log2();
+        let v : f32 = self.iso.parse().unwrap();
+        return (v / 100.0).log2();
     }
     fn calc_av(&self)->f32{
-        let v = self.aperture_value.powi(2);
-        return v.log2();
+        let v : f32 = self.aperture_value.parse().unwrap();
+        return v.powi(2).log2();
     }
     fn calc_tv(&self)->f32{
         let denominator = match self.time_value.denominator{
@@ -94,25 +103,26 @@ impl ExposureSettings{
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ProcessingOptions{
-    auto_trimming : bool,
-    trim_point : [(f32, f32);4],
-    tiling : bool,
-    tiling_blend : f32,
+    auto_trimming: bool,
+    trim_point: [(f32, f32);4],
+    tiling: bool,
+    tiling_blend: f32,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ProcessingSettings{
-    name : String,
-    uuid : Uuid,
-    time : String, // DateTime<chrono::Local>
-    exposure : ExposureSettings,
-    options : ProcessingOptions,
+    name: String,
+    uuid: Uuid,
+    time: String, // DateTime<chrono::Local>
+    exposure: ExposureSettings,
+    options: ProcessingOptions,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct ProjectSettings{
-    root_path : String,
-    last_processing : Uuid,
+    root_path: String,
+    last_exposure: ExposureSettings,
+    last_processing: Uuid,
 }
 
 impl ProjectSettings{
@@ -145,6 +155,7 @@ impl ProjectSettings{
                 path.push("texshooter");
                 return Ok(ProjectSettings{
                     root_path : path.as_path().display().to_string(),
+                    last_exposure: ExposureSettings::new(),
                     last_processing : Uuid::nil()
                 });
             }
@@ -161,10 +172,34 @@ impl ProjectSettings{
         }
     }
     pub fn get_root_path(&self)->&str{
-        return self.root_path.as_str();
+        self.root_path.as_str()
     }
     pub fn set_root_path(&mut self, path: &str){
         self.root_path = path.to_string();
+    }
+    pub fn get_iso(&self)->u32{
+        self.last_exposure.iso.parse().unwrap()
+    }
+    pub fn get_iso_as_str(&self)->&str{
+        &self.last_exposure.iso
+    }
+    pub fn set_iso(&mut self, iso: &str){
+        self.last_exposure.iso = iso.to_string();
+    }
+    pub fn get_aperture_value(&self)->f32{
+        self.last_exposure.aperture_value.parse().unwrap()
+    }
+    pub fn get_aperture_value_as_str(&self)->&str{
+        &self.last_exposure.aperture_value
+    }
+    pub fn set_aperture_value(&mut self, av: &str){
+        self.last_exposure.aperture_value = av.to_string();
+    }
+    pub fn get_time_value(&self)->RationalValue{
+        self.last_exposure.time_value
+    }
+    pub fn set_time_value(&mut self, tv: &RationalValue){
+        self.last_exposure.time_value = *tv;
     }
 }
 
